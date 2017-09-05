@@ -10,8 +10,8 @@ the routing and alerting for the alarm.
 ### run alertmanager in docker
 
 ```
-docker build -t . ale/sqs2alertmanager:latest
-docker run --rm -ti -v "$(pwd)/conf.d:/etc/alertmanager" -p 8080:9093 ale/sqs2alertmanager
+docker build -t . local/sqs2alertmanager:latest
+docker run --rm -ti -v "$(pwd)/conf.d:/etc/alertmanager" -p 8080:9093 local/sqs2alertmanager
 ```
 ### run go-aws-sqs mock
 
