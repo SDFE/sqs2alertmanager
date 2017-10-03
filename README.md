@@ -1,4 +1,4 @@
-# alertmanager
+# sqs2alertmanager
 
 sqs2alertmanger receives AWS CloudWatch Alarms from a SQS queue, processes the alarm (json message) and sends it on to prometheus alertmanager which then does
 the routing and alerting for the alarm.
@@ -36,7 +36,7 @@ docker run --rm -ti -p 5555:5555 -p 5555:5555/udp -p 5556:5556 davidkelley/riema
 docker run --rm -ti -p 4567:4567 davidkelley/riemann-dash
 ```
 
-then open riemann dahsboard on http://localhost:4567/
+then open riemann dashboard on http://localhost:4567/
 
 ### flame-graphs
 
@@ -148,13 +148,13 @@ expected output:
 go run main.go -url http://localhost:8181 -metrics -r 'alert-(?P<service>\w+)-(?P<appversion>\d+\-\d+\-\d+\-\d+)-(?P<alarmname>.*)$'
 ```
 
-### help
+## help
 
 ```
 go run main.go -h
 ```
 
-### install (locally)
+## install (locally)
 
 ```
 git config --global url.ssh://git@github.com/.insteadOf https://github.com/
