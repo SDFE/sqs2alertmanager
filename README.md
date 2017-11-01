@@ -3,23 +3,25 @@
 sqs2alertmanger receives AWS CloudWatch Alarms from a SQS queue, processes the alarm (json message) and sends it on to prometheus alertmanager which then does
 the routing and alerting for the alarm.
 
-![example_alert.png](example_alert.png)
+![example_alert.png](screenshots/example_alert.png)
 
 ## setup dev env
 
 ### run alertmanager in docker
 
 ```
-docker build -t . local/sqs2alertmanager:latest
-docker run --rm -ti -v "$(pwd)/conf.d:/etc/alertmanager" -p 8080:9093 local/sqs2alertmanager
+cd alertmanager/
+docker build -t . local/alertmanager:latest
+docker run --rm -ti -v "$(pwd)/alertmanager/conf.d:/etc/alertmanager" -p 8080:9093 local/alertmanager
 ```
+
 ### run go-aws-sqs mock
 
 ```
 docker run --rm -ti --name go-aws-sqs -p 4100:4100 pafortin/goaws
 ```
 
-then create the queue
+#### create the queue
 
 ```
 aws --endpoint-url http://localhost:4100 sqs create-queue --queue-name alerts1
@@ -27,7 +29,7 @@ aws --endpoint-url http://localhost:4100 sqs create-queue --queue-name alerts1
 
 see: https://github.com/p4tin/GoAws#testing-your-installation
 
-### riemann
+### riemann (optional)
 
 if you want to send metrics to riemann and want to test stuff locally first, run these two containers
 
@@ -38,48 +40,65 @@ docker run --rm -ti -p 4567:4567 davidkelley/riemann-dash
 
 then open riemann dashboard on http://localhost:4567/
 
-### flame-graphs
 
-*Note: probably not very useful (yet)*
-
-Flame-Graphs are enabled by the following in ```main.go```
-```
-import (
-  _ "net/http/pprof" // to provide perf / flamegraphs
-)
-```
-
-Install go-torch
-```
-go get github.com/uber/go-torch
-```
-
-You can follow the instructions on how to use it, or do it the quick way ...
-
-Get the FlameGraph scripts
-```
-cd $GOPATH/src/github.com/SDFE/sqs2alertmanager
-git clone git@github.com:brendangregg/FlameGraph.git
-```
-
-Run the app and go-torch
-```
-go run main.go -url http://localhost:8080 -metrics -r 'alert-(?P<service>\w+)-(?P<appversion>\d+\-\d+\-\d+\-\d+)-(?P<alarmname>.*)$' &
-cd FlameGraph
-go-torch -u http://localhost:8888 -t 30
-```
-
-And run some traffic
-```
-go get github.com/adjust/go-wrk
-go-wrk -n 100000 http://localhost:8888/admin/app-ready
-```
-
-After ```go-torch``` finished, you will have a file called ```torch.svg```, that's the generated FlameGraph, open it in a browser, or on a mac type in
+## run sqs2alertmanager app
 
 ```
-open torch.svg
+go run main.go -url http://localhost:8181 -metrics -r 'alert-(?P<service>\w+)-(?P<appversion>\d+\-\d+\-\d+\-\d+)-(?P<alarmname>.*)$'
 ```
+
+## help
+
+```
+go run main.go -h
+```
+
+## install (locally)
+
+```
+git config --global url.ssh://git@github.com/.insteadOf https://github.com/
+go install github.com/SDFE/sqs2alertmanager
+```
+
+## metrics
+
+metric counters are available per instance via
+
+```
+curl -s http://127.0.0.1:8888/debug/metrics | jq '.{{ countername_one_of_above }}'
+```
+
+or just ..
+
+```
+curl -s http://127.0.0.1:8888/debug/metrics | jq '.'
+```
+
+### default
+
+metrix can be given a prefix or take the default (sqs2alertmanager) to identify the service when sending metrics to riemann, by default we collect counters on OK and ERRORS of
+- pulling messages from sqs
+- sending json/alarm to alertmanager
+- deleting messages from sqs
+
+```
+"{{prefix}}.alertmanager_err": 0,
+"{{prefix}}.alertmanager_ok": 1,
+"{{prefix}}.sqs_del_error": 0,
+"{{prefix}}.sqs_del_ok": 1,
+"{{prefix}}.sqs_rcv_error": 0,
+"{{prefix}}.sqs_rcv_ok": 1
+```
+
+### per-service alarm counter
+
+additionally, we also count how many alerts of a particular service have been sent to alertmanager
+
+```
+"{{prefix}}.alerts.appname": 1,
+```
+
+## local / manual testing
 
 ### put a valid msg on the queue
 
@@ -141,61 +160,3 @@ expected output:
 2017/05/01 17:59:17 info: received  11111111-1111-1111-1111-111111111111
 2017/05/01 17:59:17 error: parsing json:  invalid character 'h' looking for beginning of value
 ```
-
-## run
-
-```
-go run main.go -url http://localhost:8181 -metrics -r 'alert-(?P<service>\w+)-(?P<appversion>\d+\-\d+\-\d+\-\d+)-(?P<alarmname>.*)$'
-```
-
-## help
-
-```
-go run main.go -h
-```
-
-## install (locally)
-
-```
-git config --global url.ssh://git@github.com/.insteadOf https://github.com/
-go install github.com/SDFE/sqs2alertmanager
-```
-
-## metrics
-
-metric counters are available per instance via
-
-```
-curl -s http://127.0.0.1:8888/debug/metrics | jq '.{{ countername_one_of_above }}'
-```
-
-or just ..
-
-```
-curl -s http://127.0.0.1:8888/debug/metrics | jq '.'
-```
-
-### default
-
-metrix can be given a prefix or take the default (sqs2alertmanager) to identify the service when sending metrics to riemann, by default we collect counters on OK and ERRORS of
-- pulling messages from sqs
-- sending json/alarm to alertmanager
-- deleting messages from sqs
-
-```
-"{{prefix}}.alertmanager_err": 0,
-"{{prefix}}.alertmanager_ok": 1,
-"{{prefix}}.sqs_del_error": 0,
-"{{prefix}}.sqs_del_ok": 1,
-"{{prefix}}.sqs_rcv_error": 0,
-"{{prefix}}.sqs_rcv_ok": 1
-```
-
-### per-service alarm counter
-
-additionally, we also count how many alerts of a particular service have been sent to alertmanager
-
-```
-"{{prefix}}.alerts.appname": 1,
-```
-
