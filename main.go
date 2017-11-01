@@ -204,7 +204,6 @@ func healthcheckHandler(w http.ResponseWriter, req *http.Request) {
 // main function
 func main() {
 
-	// awsEndpoint setting needs removing or defaulting to something real
 	awsEndpoint := flag.String("endpoint", "", "the aws endpoint URL to use")
 	awsRegion := flag.String("region", "us-east-1", "the aws region to connect to for pulling from sqs, default: us-east-1")
 	sqsURL := flag.String("sqs", "http://localhost:4100/queue/alerts1", "the sqs queue url")
