@@ -1,13 +1,5 @@
 // sqs2alertmanager app pulls messages from SQS and posts them to Prometheus Alertmanager as a "Critical" alert
 
-/*
-
-
-	- when should we consider a alert regex valid, when all fields matched, when app and alarmname matched ?
-
-
-*/
-
 package main
 
 import (
@@ -18,7 +10,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	_ "net/http/pprof" // to provide perf / flamegraphs
 	"os"
 	"regexp"
 	"time"
@@ -75,7 +66,7 @@ func sendMessage(alertmanagerURL string, b []byte, ch chan *sqs.Message, metricP
 // delSqsMessages deletes messages coming in from a *sqs.Message channel
 // messages on that channel are already processed and sent off to prometheus-alertmanager, so it is
 // save to delete them
-func delSqsMessages(ch chan *sqs.Message, queueURL *string, awsEndpoint *string, metricPrefix *string) {
+func delSqsMessages(ch chan *sqs.Message, queueURL *string, awsEndpoint *string, awsRegion *string, metricPrefix *string) {
 
 	cERRdel := metrics.GetOrRegisterCounter(*metricPrefix+".sqs_del_error", r)
 	cOKdel := metrics.GetOrRegisterCounter(*metricPrefix+".sqs_del_ok", r)
@@ -89,7 +80,7 @@ func delSqsMessages(ch chan *sqs.Message, queueURL *string, awsEndpoint *string,
 			&aws.Config{
 				Endpoint:   aws.String(*awsEndpoint),
 				DisableSSL: aws.Bool(true),
-				Region:     aws.String("us-east-1"),
+				Region:     aws.String(*awsRegion),
 			})
 	} else {
 		sess, err = session.NewSession(&aws.Config{})
@@ -114,7 +105,7 @@ func delSqsMessages(ch chan *sqs.Message, queueURL *string, awsEndpoint *string,
 }
 
 // rcvSqsMessages polls SQS for new messages and retrieves up to 10 messages at a time
-func rcvSqsMessages(sqsURL *string, awsEndpoint *string, b *backoff.Backoff, sqsMsgChan chan *sqs.Message, metricPrefix string) {
+func rcvSqsMessages(sqsURL *string, awsEndpoint *string, awsRegion *string, backOff *backoff.Backoff, sqsMsgChan chan *sqs.Message, metricPrefix string) {
 
 	cERR := metrics.GetOrRegisterCounter(metricPrefix+".sqs_rcv_error", r)
 	cOK := metrics.GetOrRegisterCounter(metricPrefix+".sqs_rcv_ok", r)
@@ -129,13 +120,13 @@ func rcvSqsMessages(sqsURL *string, awsEndpoint *string, b *backoff.Backoff, sqs
 		MaxNumberOfMessages: aws.Int64(10),
 	}
 
-	// ------------- TODO --------------
+	// TODO: dedupe this as we have it again in deSqsMessages
 	if *awsEndpoint != "" {
 		sess, err = session.NewSession(
 			&aws.Config{
 				Endpoint:   aws.String(*awsEndpoint),
 				DisableSSL: aws.Bool(true),
-				Region:     aws.String("us-east-1"),
+				Region:     aws.String(*awsRegion),
 			})
 	} else {
 		sess, err = session.NewSession(&aws.Config{})
@@ -152,7 +143,7 @@ func rcvSqsMessages(sqsURL *string, awsEndpoint *string, b *backoff.Backoff, sqs
 		if err != nil {
 			cERR.Inc(1)
 			log.Println("error: ", err)
-			time.Sleep(b.Duration()) // sleep with expo backoff & jitter
+			time.Sleep(backOff.Duration()) // sleep with expo backoff & jitter
 			continue
 		}
 
@@ -213,8 +204,8 @@ func healthcheckHandler(w http.ResponseWriter, req *http.Request) {
 // main function
 func main() {
 
-	// awsEndpoint setting needs removing or defaulting to something real
 	awsEndpoint := flag.String("endpoint", "", "the aws endpoint URL to use")
+	awsRegion := flag.String("region", "us-east-1", "the aws region to connect to for pulling from sqs, default: us-east-1")
 	sqsURL := flag.String("sqs", "http://localhost:4100/queue/alerts1", "the sqs queue url")
 	alertmanagerURL := flag.String("url", "http://localhost:8080", "the http(s):// url to prometheus alertmanager")
 	regex := flag.String("r", ``, "regex to match cloudwatch alerts against")
@@ -225,11 +216,11 @@ func main() {
 	metricPrefix := flag.String("metric-prefix", "sqs2alertmanager", "metric prefix to be used, app/servie name would be a good choice")
 
 	// metric output enable/disable
-	metricRiemann := flag.Bool("riemann", false, "send metric data to riemann")
-	metricOutput := flag.Bool("metrics", false, "output metric data")
+	metricEnableRiemannOutput := flag.Bool("riemann", false, "send metric data to riemann")
+	metricEnableOutput := flag.Bool("metrics", false, "output metric data")
 	flag.Parse()
 
-	b := &backoff.Backoff{Jitter: true, Min: 5 * time.Second, Max: 5 * time.Minute}
+	backOff := &backoff.Backoff{Jitter: true, Min: 5 * time.Second, Max: 5 * time.Minute}
 
 	/*
 
@@ -248,11 +239,11 @@ func main() {
 
 	exp.Exp(r) // expvar + go-metric metrics
 
-	if *metricOutput == true {
+	if *metricEnableOutput == true {
 		go metrics.Log(r, 60*time.Second, log.New(os.Stderr, "", log.LstdFlags)) // log metrics every 60 seconds
 	}
 
-	if *metricRiemann == true {
+	if *metricEnableRiemannOutput == true {
 		go riemann.Report(r, 10*time.Second, *riemannAddress) // send metrics to riemann every 10 seconds
 	}
 
@@ -265,14 +256,14 @@ func main() {
 	/*
 
 
-		put sqs messages onto sqsMsgChan channel
+		create sqsMsgChan channel and start putting messages on the channel with rcvSqsMessages func
 
 
 	*/
 
 	sqsMsgChan := make(chan *sqs.Message)
 	defer close(sqsMsgChan)
-	go rcvSqsMessages(sqsURL, awsEndpoint, b, sqsMsgChan, *metricPrefix)
+	go rcvSqsMessages(sqsURL, awsEndpoint, awsRegion, backOff, sqsMsgChan, *metricPrefix)
 
 	/*
 
@@ -284,27 +275,27 @@ func main() {
 
 	for message := range sqsMsgChan {
 
-		myAlert := types.CloudWatchAlert{}
-		err := json.Unmarshal([]byte(*message.Body), &myAlert)
+		CWAlert := types.CloudWatchAlert{}
+		err := json.Unmarshal([]byte(*message.Body), &CWAlert)
 		if err != nil {
 			log.Println("error: parsing sqs message: ", err)
 			continue
 		}
 
-		data := myAlert.Message
-		myAlertData := types.AlarmData{}
-		err = json.Unmarshal([]byte(data), &myAlertData)
+		alertData := CWAlert.Message
+		CWAlertData := types.AlarmData{}
+		err = json.Unmarshal([]byte(alertData), &CWAlertData)
 		if err != nil {
 			log.Println("error: parsing sqs message.Message: ", err)
 			continue
 		}
 
 		promAlertAnnotations := types.Annotations{
-			Asg:          myAlertData.Trigger.Dimensions[0].Value,
-			Description:  myAlertData.AlarmDescription,
-			AWSAccountID: myAlertData.AWSAccountID,
-			Reason:       myAlertData.NewStateReason,
-			Region:       myAlertData.Region,
+			Asg:          CWAlertData.Trigger.Dimensions[0].Value,
+			Description:  CWAlertData.AlarmDescription,
+			AWSAccountID: CWAlertData.AWSAccountID,
+			Reason:       CWAlertData.NewStateReason,
+			Region:       CWAlertData.Region,
 			Source:       sqsURL,
 		}
 
@@ -313,7 +304,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("error: unable to compile regex: %v\n", err)
 		}
-		result := re.FindAllStringSubmatch(myAlertData.AlarmName, -1)
+		result := re.FindAllStringSubmatch(CWAlertData.AlarmName, -1)
 		n1 := re.SubexpNames() // keeps the names of the matches in same order as per regex given
 
 		resultMap := map[string]string{}
@@ -324,7 +315,7 @@ func main() {
 		promAlertLabels := types.Labels{
 			Env:        resultMap["env"],
 			Alertname:  resultMap["alarmname"],
-			Region:     myAlertData.Region,
+			Region:     CWAlertData.Region,
 			Service:    resultMap["service"],
 			RunbookURL: resultMap["runbook"],
 			Severity:   "Critical", // Cloudwatch has no concept of severity, so everything is critical for now
@@ -350,8 +341,8 @@ func main() {
 		delCh := make(chan *sqs.Message)
 		defer close(delCh)
 
-		go sendMessage(*alertmanagerURL, jsonMsg, ch, *metricPrefix, message) // send JSON message to alertmanager in a go-routine
-		go delSqsMessages(delCh, sqsURL, awsEndpoint, metricPrefix)           // delete messages in a go-routine
+		go sendMessage(*alertmanagerURL, jsonMsg, ch, *metricPrefix, message)  // send JSON message to alertmanager in a go-routine
+		go delSqsMessages(delCh, sqsURL, awsEndpoint, awsRegion, metricPrefix) // delete messages in a go-routine
 
 		for r := range ch { // consume messages on ch channel
 			log.Println("info: processed", *r.MessageId) // log the processed messageId
